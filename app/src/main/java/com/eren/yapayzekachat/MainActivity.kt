@@ -379,8 +379,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun modeMaxOutputTokens(): Int = when (mode) {
-        ChatMode.CODING -> 500
-        ChatMode.CHAT -> 4096
+        ChatMode.CODING -> 4096
+        ChatMode.CHAT -> 1024
         ChatMode.NORMAL -> 1024
     }
 
@@ -887,8 +887,8 @@ private fun SettingsDialog(vm: ChatViewModel) {
                 }
                 Text(
                     when (selectedMode) {
-                        ChatMode.CODING -> "Kodlama: temperature 0.2 • maksimum 500 token • kısa ve doğrudan kod odaklı."
-                        ChatMode.CHAT -> "Sohbet: temperature 0.9 • maksimum 4096 token • daha doğal ve ayrıntılı cevaplar."
+                        ChatMode.CODING -> "Kodlama: temperature 0.2 • maksimum 4096 token • uzun ve doğrudan kod odaklı."
+                        ChatMode.CHAT -> "Sohbet: temperature 0.9 • maksimum 1024 token • daha doğal ve dengeli cevaplar."
                         ChatMode.NORMAL -> "Normal: temperature 0.7 • maksimum 1024 token • dengeli cevaplar."
                     },
                     style = MaterialTheme.typography.bodySmall
