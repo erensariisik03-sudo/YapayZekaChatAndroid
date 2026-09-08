@@ -191,7 +191,12 @@ class GeminiApi {
 
             if (!result.isSuccess) {
                 return if (combined.isNotBlank()) {
-                    result.copy(text = combined.trim())
+                    Result(
+                        text = combined.trim(),
+                        statusCode = 200,
+                        rawError = null,
+                        finishReason = lastResult?.finishReason
+                    )
                 } else {
                     result
                 }

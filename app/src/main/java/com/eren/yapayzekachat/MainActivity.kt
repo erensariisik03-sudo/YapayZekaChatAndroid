@@ -1,5 +1,6 @@
 package com.eren.yapayzekachat
 
+import android.Manifest
 import android.content.ClipData
 import android.content.Context
 import android.content.ClipboardManager
@@ -188,6 +189,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         activeId.value = id
     }
 
+    fun setRuntimeError(message: String) {
+        error = message
+    }
+
     fun newConversation() {
         viewModelScope.launch {
             val created = repo.createConversation()
@@ -353,7 +358,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             loading = false
             val result = finalResult ?: GeminiApi.Result(rawError = "Bilinmeyen hata")
             if (result.isSuccess) {
-                repo.insertAssistantMessage(conversationId, result.text)
+                withContext(Dispatchers.IO) { repo.insertAssistantMessage(conversationId, result.text) }
+                error = null
             } else {
                 error = buildError(result)
             }
@@ -407,7 +413,12 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             retrying = false
             loading = false
             val result = finalResult ?: GeminiApi.Result(rawError = "Bilinmeyen hata")
-            if (result.isSuccess) repo.insertAssistantMessage(id, result.text) else error = buildError(result)
+            if (result.isSuccess) {
+                withContext(Dispatchers.IO) { repo.insertAssistantMessage(id, result.text) }
+                error = null
+            } else {
+                error = buildError(result)
+            }
         }
     }
 
@@ -465,17 +476,38 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
     }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val uri = cameraUri
-        if (success && uri != null) pendingUris = (pendingUris + uri).distinct()
-        else if (uri != null) runCatching { context.contentResolver.delete(uri, null, null) }
+        if (success && uri != null) {
+            pendingUris = (pendingUris + uri).distinct()
+        } else if (uri != null) {
+            runCatching { context.contentResolver.delete(uri, null, null) }
+        }
         cameraUri = null
     }
 
     fun launchCamera() {
         val dir = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
         val file = java.io.File.createTempFile("camera_", ".jpg", dir)
-        val uri = FileProvider.getUriForFile(context, "${'$'}{BuildConfig.APPLICATION_ID}.fileprovider", file)
+        val uri = FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.fileprovider", file)
         cameraUri = uri
         cameraLauncher.launch(uri)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            runCatching { launchCamera() }.onFailure { vm.setRuntimeError("Kamera başlatılamadı: ${it.message ?: "bilinmeyen hata"}") }
+        } else {
+            vm.setRuntimeError("Kamera izni verilmedi. Android ayarlarından uygulama için Kamera iznini açmalısın.")
+        }
+    }
+
+    fun requestCamera() {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            runCatching { launchCamera() }.onFailure { vm.setRuntimeError("Kamera başlatılamadı: ${it.message ?: "bilinmeyen hata"}") }
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     LaunchedEffect(messages.size) {
@@ -483,6 +515,7 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
     }
 
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var modelMenuExpanded by remember { mutableStateOf(false) }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -539,12 +572,30 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                 TopAppBar(
                     title = {
                         val title = conversations.firstOrNull { it.id == activeId }?.title ?: "Yeni sohbet"
-                        Column {
-                            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                "${vm.selectedModel} • Custom • T=${"%.2f".format(java.util.Locale.US, vm.temperature)} • ${vm.maxOutputTokens} token",
-                                style = MaterialTheme.typography.labelSmall
-                            )
+                        Box {
+                            Column(Modifier.clickable(enabled = vm.availableModels.isNotEmpty()) { modelMenuExpanded = true }) {
+                                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    if (vm.selectedModel.isBlank()) "Model seç" else vm.selectedModel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false }
+                            ) {
+                                vm.availableModels.distinct().forEach { model ->
+                                    DropdownMenuItem(
+                                        text = { Text(model, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                        onClick = {
+                                            vm.setModel(model)
+                                            modelMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "Menü") } },
@@ -563,7 +614,7 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                 selectedUris = pendingUris,
                 onPickFiles = { picker.launch(arrayOf("*/*")) },
                 onPickGallery = { galleryPicker.launch("image/*") },
-                onTakePhoto = { runCatching { launchCamera() } },
+                onTakePhoto = { requestCamera() },
                 onRemoveFile = { pendingUris = pendingUris.filterIndexed { index, _ -> index != it } },
                 onSend = {
                     vm.send(draft, pendingUris)
@@ -635,15 +686,17 @@ private fun ChatScreen(
         if (error != null) {
             Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
                 Column(Modifier.padding(12.dp)) {
-                    Text("Yanıt alınamadı", fontWeight = FontWeight.Bold)
+                    Text("İşlem başarısız oldu", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text(error, style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(5.dp))
-                    Text(
-                        "Bu hata seçili modelden kaynaklanıyor olabilir; başka bir model denemek önerilir.",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium
-                    )
+                    if (error.contains("model", ignoreCase = true) || error.contains("404", ignoreCase = true) || error.contains("403", ignoreCase = true)) {
+                        Text(
+                            "Bu hata model erişimiyle ilgili olabilir; başka bir model seçmeyi deneyebilirsin.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = onRetry) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("Tekrar gönder") }
