@@ -237,7 +237,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         loadModels()
     }
 
-    fun setMode(newMode: ChatMode) {
+    fun changeMode(newMode: ChatMode) {
         mode = newMode
         prefs.edit().putString(KEY_MODE, newMode.name).apply()
     }
@@ -493,14 +493,14 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                     },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "Menü") } },
                     actions = {
-                        IconButton(onClick = { vm.setMode(ChatMode.CODING) }) {
+                        IconButton(onClick = { vm.changeMode(ChatMode.CODING) }) {
                             Icon(
                                 Icons.Default.Code,
                                 contentDescription = "Kodlama Modu",
                                 tint = if (vm.mode == ChatMode.CODING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                             )
                         }
-                        IconButton(onClick = { vm.setMode(ChatMode.CHAT) }) {
+                        IconButton(onClick = { vm.changeMode(ChatMode.CHAT) }) {
                             Icon(
                                 Icons.Default.Chat,
                                 contentDescription = "Sohbet Modu",
