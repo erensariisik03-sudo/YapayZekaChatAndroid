@@ -230,7 +230,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         loadModels()
     }
 
-    fun setCodingMode(enabled: Boolean) {
+    fun setCodingModeEnabled(enabled: Boolean) {
         codingMode = enabled
         prefs.edit().putBoolean(KEY_CODING_MODE, enabled).apply()
     }
@@ -453,7 +453,7 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                     },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "Menü") } },
                     actions = {
-                        IconButton(onClick = { vm.setCodingMode(!vm.codingMode) }) {
+                        IconButton(onClick = { vm.setCodingModeEnabled(!vm.codingMode) }) {
                             Icon(
                                 Icons.Default.Code,
                                 contentDescription = if (vm.codingMode) "Kodlama Modu açık" else "Kodlama Modu kapalı",
