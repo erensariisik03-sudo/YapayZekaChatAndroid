@@ -1,0 +1,605 @@
+package com.eren.yapayzekachat
+
+import android.content.Context
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.eren.yapayzekachat.data.ChatRepository
+import com.eren.yapayzekachat.data.ConversationEntity
+import com.eren.yapayzekachat.data.MessageEntity
+import com.eren.yapayzekachat.network.GeminiApi
+import org.json.JSONArray
+import org.json.JSONObject
+
+private const val PREFS = "app_settings"
+private const val KEY_API = "api_key"
+private const val KEY_MODEL = "model"
+private const val DEFAULT_MODEL = "gemini-2.5-flash"
+private const val SYSTEM_INSTRUCTION = "Sen teknik konularda yardımcı olan, sohbet geçmişine sadık bir asistansın. Gereksiz tekrar yapma; kullanıcıya doğrudan, açık ve uygulanabilir cevaplar ver."
+
+class MainActivity : ComponentActivity() {
+    private val vm: ChatViewModel by viewModels {
+        ChatViewModel.Factory(applicationContext)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                YapayZekaChatApp(vm)
+            }
+        }
+    }
+}
+
+class ChatViewModel(private val context: Context) : ViewModel() {
+    private val repo = ChatRepository(context)
+    private val api = GeminiApi()
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    val conversations: StateFlow<List<ConversationEntity>> = repo.observeConversations()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val activeId = MutableStateFlow<String?>(null)
+    val activeConversationId: StateFlow<String?> = activeId
+
+    val messages: StateFlow<List<MessageEntity>> = activeId
+        .distinctUntilChanged()
+        .flatMapLatest { id ->
+            if (id == null) kotlinx.coroutines.flow.flowOf(emptyList()) else repo.observeMessages(id)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    var selectedModel by mutableStateOf(prefs.getString(KEY_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL)
+        private set
+    var apiKey by mutableStateOf(prefs.getString(KEY_API, "") ?: "")
+        private set
+    var availableModels by mutableStateOf(emptyList<String>())
+        private set
+    var loading by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+    var retrying by mutableStateOf(false)
+        private set
+    var settingsOpen by mutableStateOf(false)
+    var modelsLoading by mutableStateOf(false)
+        private set
+    var modelsError by mutableStateOf<String?>(null)
+        private set
+
+    init {
+        viewModelScope.launch {
+            conversations.collect { list ->
+                if (activeId.value == null && list.isNotEmpty()) activeId.value = list.first().id
+                if (list.isEmpty()) {
+                    val created = repo.createConversation()
+                    activeId.value = created.id
+                }
+            }
+        }
+    }
+
+    fun selectConversation(id: String) {
+        error = null
+        activeId.value = id
+    }
+
+    fun newConversation() {
+        viewModelScope.launch {
+            val created = repo.createConversation()
+            activeId.value = created.id
+            error = null
+        }
+    }
+
+    fun deleteConversation(id: String) {
+        viewModelScope.launch {
+            val replacement = conversations.value.firstOrNull { it.id != id }?.id
+            repo.deleteConversation(id)
+            if (activeId.value == id) {
+                activeId.value = replacement
+                if (replacement == null) {
+                    val created = repo.createConversation()
+                    activeId.value = created.id
+                }
+            }
+        }
+    }
+
+    fun saveSettings(key: String, model: String) {
+        apiKey = key.trim()
+        selectedModel = model.trim().ifBlank { DEFAULT_MODEL }
+        prefs.edit().putString(KEY_API, apiKey).putString(KEY_MODEL, selectedModel).apply()
+        settingsOpen = false
+    }
+
+    fun loadModels() {
+        if (apiKey.isBlank()) {
+            modelsError = "Önce API anahtarını kaydetmelisin."
+            return
+        }
+        modelsLoading = true
+        modelsError = null
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = api.listModels(apiKey)
+            withContext(Dispatchers.Main) {
+                modelsLoading = false
+                if (result.models.isNotEmpty()) {
+                    availableModels = result.models
+                    if (selectedModel !in result.models) {
+                        selectedModel = result.models.first()
+                        prefs.edit().putString(KEY_MODEL, selectedModel).apply()
+                    }
+                } else {
+                    modelsError = result.error ?: "Model listesi alınamadı."
+                }
+            }
+        }
+    }
+
+    fun setModel(model: String) {
+        selectedModel = model
+        prefs.edit().putString(KEY_MODEL, model).apply()
+    }
+
+    fun send(text: String, uris: List<Uri>) {
+        val clean = text.trim()
+        if (clean.isBlank() && uris.isEmpty()) return
+        if (apiKey.isBlank()) {
+            settingsOpen = true
+            error = "API anahtarı gerekli. Ayarlardan Gemini API anahtarını gir."
+            return
+        }
+        val conversationId = activeId.value ?: return
+
+        viewModelScope.launch {
+            loading = true
+            error = null
+            val saved = withContext(Dispatchers.IO) { repo.insertUserMessage(conversationId, clean, uris) }
+            var finalResult: GeminiApi.Result? = null
+            retrying = false
+            for (attempt in 1..3) {
+                if (attempt > 1) {
+                    retrying = true
+                    delay((attempt - 1) * 1_500L)
+                }
+                val requestMessages = repo.getRequestMessages(conversationId)
+                val result = withContext(Dispatchers.IO) {
+                    api.generate(apiKey, selectedModel, requestMessages, SYSTEM_INSTRUCTION)
+                }
+                finalResult = result
+                if (result.isSuccess) break
+            }
+            retrying = false
+            loading = false
+            val result = finalResult ?: GeminiApi.Result(rawError = "Bilinmeyen hata")
+            if (result.isSuccess) {
+                repo.insertAssistantMessage(conversationId, result.text)
+            } else {
+                error = buildError(result)
+            }
+        }
+    }
+
+    fun retryLast() {
+        val id = activeId.value ?: return
+        if (loading || apiKey.isBlank()) return
+        viewModelScope.launch {
+            loading = true
+            error = null
+            retrying = true
+            var finalResult: GeminiApi.Result? = null
+            for (attempt in 1..3) {
+                if (attempt > 1) delay((attempt - 1) * 1_500L)
+                val requestMessages = repo.getRequestMessages(id)
+                val result = withContext(Dispatchers.IO) {
+                    api.generate(apiKey, selectedModel, requestMessages, SYSTEM_INSTRUCTION)
+                }
+                finalResult = result
+                if (result.isSuccess) break
+            }
+            retrying = false
+            loading = false
+            val result = finalResult ?: GeminiApi.Result(rawError = "Bilinmeyen hata")
+            if (result.isSuccess) repo.insertAssistantMessage(id, result.text) else error = buildError(result)
+        }
+    }
+
+    private fun buildError(result: GeminiApi.Result): String {
+        val code = if (result.statusCode > 0) "HTTP ${result.statusCode}: " else ""
+        return "$code${result.rawError ?: "İstek başarısız."}"
+    }
+
+    class Factory(private val context: Context) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = ChatViewModel(context) as T
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun YapayZekaChatApp(vm: ChatViewModel) {
+    val conversations by vm.conversations.collectAsState()
+    val activeId by vm.activeConversationId.collectAsState()
+    val messages by vm.messages.collectAsState()
+    val drawerState = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
+    var draft by remember { mutableStateOf("") }
+    var pendingUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        pendingUris = uris
+    }
+
+    LaunchedEffect(messages.size) {
+        // The lazy list below naturally stays near the newest message after sending.
+    }
+
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(320.dp)) {
+                Column(Modifier.fillMaxSize().padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 12.dp)) {
+                        Text("Yapay Zeka Chat", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = vm::newConversation) { Icon(Icons.Default.Add, "Yeni sohbet") }
+                    }
+                    Button(onClick = vm::newConversation, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Yeni sohbet")
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text("Geçmiş", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(modifier = Modifier.weight(1f)) {
+                        items(conversations, key = { it.id }) { chat ->
+                            val selected = chat.id == activeId
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                    .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
+                                    .clickable { vm.selectConversation(chat.id); scope.launch { drawerState.close() } }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(chat.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                                    Text(java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date(chat.updatedAt)), style = MaterialTheme.typography.labelSmall)
+                                }
+                                IconButton(onClick = { vm.deleteConversation(chat.id) }) { Icon(Icons.Default.DeleteOutline, "Sil") }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                    }
+                    Divider()
+                    TextButton(onClick = { vm.settingsOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Settings, null); Spacer(Modifier.width(8.dp)); Text("Ayarlar")
+                    }
+                }
+            }
+        }
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        val title = conversations.firstOrNull { it.id == activeId }?.title ?: "Yeni sohbet"
+                        Column {
+                            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(vm.selectedModel, style = MaterialTheme.typography.labelSmall)
+                        }
+                    },
+                    navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "Menü") } },
+                    actions = {
+                        IconButton(onClick = { vm.settingsOpen = true }) { Icon(Icons.Default.Settings, "Ayarlar") }
+                    }
+                )
+            }
+        ) { padding ->
+            ChatScreen(
+                modifier = Modifier.padding(padding),
+                messages = messages,
+                draft = draft,
+                onDraftChange = { draft = it },
+                selectedUris = pendingUris,
+                onPickFiles = { picker.launch(arrayOf("*/*")) },
+                onRemoveFile = { pendingUris = pendingUris.filterIndexed { index, _ -> index != it } },
+                onSend = {
+                    vm.send(draft, pendingUris)
+                    draft = ""
+                    pendingUris = emptyList()
+                },
+                loading = vm.loading,
+                retrying = vm.retrying,
+                error = vm.error,
+                onRetry = vm::retryLast,
+                onModel = { vm.settingsOpen = true }
+            )
+        }
+    }
+
+    // Overlay menu button behavior is implemented through a lightweight dialog-free drawer trigger below.
+    LaunchedEffect(Unit) {
+        // Kept intentionally empty; Scaffold's menu button is replaced by this state-aware route in ChatScreen.
+    }
+
+    if (vm.settingsOpen) {
+        SettingsDialog(vm)
+    }
+}
+
+@Composable
+private fun ChatScreen(
+    modifier: Modifier,
+    messages: List<MessageEntity>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    selectedUris: List<Uri>,
+    onPickFiles: () -> Unit,
+    onRemoveFile: (Int) -> Unit,
+    onSend: () -> Unit,
+    loading: Boolean,
+    retrying: Boolean,
+    error: String?,
+    onRetry: () -> Unit,
+    onModel: () -> Unit
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
+    Column(modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 16.dp, bottom = 12.dp)
+        ) {
+            itemsIndexed(messages, key = { _, item -> item.id }) { _, message ->
+                MessageBubble(message)
+            }
+            if (retrying) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("İstek başarısız oldu, tekrar deneniyor…")
+                    }
+                }
+            }
+        }
+        if (error != null) {
+            Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Yanıt alınamadı", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(error, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        "Bu hata seçili modelden kaynaklanıyor olabilir; başka bir model denemek önerilir.",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = onRetry) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("Tekrar gönder") }
+                        TextButton(onClick = onModel) { Icon(Icons.Default.SwapHoriz, null); Spacer(Modifier.width(4.dp)); Text("Model değiştir") }
+                    }
+                }
+            }
+        }
+        if (selectedUris.isNotEmpty()) {
+            LazyRow(modifier = Modifier.fillMaxWidth().height(72.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                itemsIndexed(selectedUris) { index, uri ->
+                    AssistChip(
+                        onClick = { onRemoveFile(index) },
+                        label = { Text(uri.lastPathSegment?.substringAfterLast('/') ?: "Dosya", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = { Icon(Icons.Default.AttachFile, null, Modifier.size(16.dp)) }
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(10.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(onClick = onPickFiles) { Icon(Icons.Default.AttachFile, "Dosya ekle") }
+            Box(
+                modifier = Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                BasicTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                    minLines = 1,
+                    maxLines = 6,
+                    decorationBox = { inner ->
+                        if (draft.isBlank()) Text("Mesajını yaz…", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .65f))
+                        inner()
+                    }
+                )
+            }
+            Surface(
+                modifier = Modifier.size(52.dp).clip(RoundedCornerShape(18.dp)).clickable(enabled = !loading, onClick = onSend),
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (loading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    else Icon(Icons.AutoMirrored.Filled.Send, "Gönder")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(message: MessageEntity) {
+    val mine = message.role == "user"
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+        Column(
+            modifier = Modifier.fillMaxWidth(.88f)
+                .clip(RoundedCornerShape(20.dp))
+                .background(if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                .padding(14.dp)
+        ) {
+            if (message.attachmentsJson != "[]") {
+                Text("📎 Ekli dosya", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(5.dp))
+            }
+            if (message.text.isNotBlank()) Text(message.text, style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+}
+
+
+@Composable
+private fun SettingsDialog(vm: ChatViewModel) {
+    var key by remember(vm.apiKey) { mutableStateOf(vm.apiKey) }
+    var model by remember(vm.selectedModel) { mutableStateOf(vm.selectedModel) }
+    var expanded by remember { mutableStateOf(false) }
+    val fallback = listOf(
+        DEFAULT_MODEL,
+        "gemini-2.5-flash-lite",
+        "gemini-flash-lite-latest"
+    )
+    val models = (vm.availableModels + fallback).distinct()
+
+    AlertDialog(
+        onDismissRequest = { vm.settingsOpen = false },
+        title = { Text("Ayarlar") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Gemini API anahtarı", style = MaterialTheme.typography.labelLarge)
+                BasicTextField(
+                    value = key,
+                    onValueChange = { key = it },
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                    decorationBox = { inner ->
+                        if (key.isBlank()) Text("AIza… / AQ.…", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .6f))
+                        inner()
+                    }
+                )
+                Text("Model", style = MaterialTheme.typography.labelLarge)
+                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+                    BasicTextField(
+                        value = model,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier.menuAnchor().fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                        decorationBox = { inner ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.weight(1f)) { inner() }
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded)
+                            }
+                        },
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    )
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        models.forEach { item ->
+                            DropdownMenuItem(text = { Text(item) }, onClick = { model = item; expanded = false })
+                        }
+                    }
+                }
+                TextButton(onClick = { vm.saveSettings(key, model); vm.loadModels() }) {
+                    if (vm.modelsLoading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Default.Refresh, null)
+                    Spacer(Modifier.width(6.dp)); Text("Kaydet ve modelleri yenile")
+                }
+                vm.modelsError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                Text("Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { Button(onClick = { vm.saveSettings(key, model) }) { Text("Kaydet") } },
+        dismissButton = { TextButton(onClick = { vm.settingsOpen = false }) { Text("İptal") } }
+    )
+}
