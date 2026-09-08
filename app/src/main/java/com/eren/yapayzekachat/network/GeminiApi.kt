@@ -25,7 +25,8 @@ class GeminiApi {
     data class Result(
         val text: String = "",
         val statusCode: Int = 0,
-        val rawError: String? = null
+        val rawError: String? = null,
+        val finishReason: String? = null
     ) {
         val isSuccess: Boolean get() = statusCode in 200..299 && text.isNotBlank()
     }
@@ -143,15 +144,76 @@ class GeminiApi {
                         }
                     }.trim()
                     if (text.isBlank()) {
-                        Result(statusCode = 502, rawError = "Model boş yanıt döndürdü.")
+                        Result(statusCode = 502, rawError = "Model boş yanıt döndürdü.", finishReason = first?.optString("finishReason")?.ifBlank { null })
                     } else {
-                        Result(text = text, statusCode = response.code)
+                        Result(
+                            text = text,
+                            statusCode = response.code,
+                            finishReason = first?.optString("finishReason")?.ifBlank { null }
+                        )
                     }
                 }
             }
         } catch (e: Exception) {
             Result(statusCode = 0, rawError = e.message ?: e.javaClass.simpleName)
         }
+    }
+
+
+    /**
+     * Requests a response and automatically continues when Gemini stops because
+     * the configured output-token limit was reached. Continuation turns are
+     * internal and are not persisted into the chat history.
+     */
+    fun generateComplete(
+        apiKey: String,
+        model: String,
+        messages: List<RequestMessage>,
+        systemInstruction: String,
+        temperature: Double = 0.7,
+        maxOutputTokens: Int? = null,
+        maxContinuations: Int = 4
+    ): Result {
+        var requestMessages = messages.toMutableList()
+        var combined = ""
+        var lastResult: Result? = null
+
+        repeat(maxContinuations + 1) {
+            val result = generate(
+                apiKey = apiKey,
+                model = model,
+                messages = requestMessages,
+                systemInstruction = systemInstruction,
+                temperature = temperature,
+                maxOutputTokens = maxOutputTokens
+            )
+            lastResult = result
+
+            if (!result.isSuccess) {
+                return if (combined.isNotBlank()) {
+                    result.copy(text = combined.trim())
+                } else {
+                    result
+                }
+            }
+
+            combined += result.text
+
+            if (!result.finishReason.equals("MAX_TOKENS", ignoreCase = true)) {
+                return result.copy(text = combined.trim())
+            }
+
+            requestMessages = (requestMessages + listOf(
+                RequestMessage(role = "assistant", text = result.text),
+                RequestMessage(
+                    role = "user",
+                    text = "Continue exactly from where you stopped. Do not repeat any previous text. Continue the answer/code directly and completely."
+                )
+            ).toMutableList()
+        }
+
+        return lastResult?.copy(text = combined.trim())
+            ?: Result(statusCode = 502, rawError = "Model yanıt veremedi.")
     }
 
     private fun extractError(body: String): String {

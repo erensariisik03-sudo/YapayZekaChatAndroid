@@ -39,8 +39,6 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -59,7 +57,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -111,25 +108,12 @@ import com.eren.yapayzekachat.network.GeminiApi
 private const val PREFS = "app_settings"
 private const val KEY_API = "api_key"
 private const val KEY_MODEL = "model"
-private const val KEY_MODE = "chat_mode"
-private const val KEY_CODING_MODE_LEGACY = "coding_mode"
+private const val KEY_TEMPERATURE = "temperature"
+private const val KEY_MAX_OUTPUT_TOKENS = "max_output_tokens"
 private const val DEFAULT_MODEL = ""
-private const val NORMAL_SYSTEM_INSTRUCTION = "Sen teknik konularda yardımcı olan, sohbet geçmişine sadık bir asistansın. Gereksiz tekrar yapma; kullanıcıya doğrudan, açık ve uygulanabilir cevaplar ver."
-private const val CHAT_SYSTEM_INSTRUCTION = "Sen doğal, sıcak ve bilgili bir sohbet asistanısın. Kullanıcının bağlamını takip et, anlaşılır ve kapsamlı cevaplar ver. Gerektiğinde örnekler sun; gereksiz tekrar yapma."
-private val CODING_SYSTEM_INSTRUCTION = """
-Sen uzman ve pragmatik bir yazılım geliştirme asistanısın. Amacın en az token harcayarak, en optimize ve doğrudan çalışan kodu üretmektir.
-
-KURALLAR:
-1. Sıfır Sohbet: Selamlama, giriş veya kapanış cümleleri kullanma ("Merhaba", "İşte kodunuz", "Başka sorunuz var mı?" vb.).
-2. Doğrudan Çözüm: Sadece kodu ver. Sadece mantığın çok karmaşık olduğu durumlarda 1-2 cümlelik teknik açıklama yap.
-3. Format: Kod bloklarını her zaman ilgili dil etiketiyle (Markdown) sarmala.
-4. Yorum Satırları: Koddaki yorum satırlarını (comments) sadece kritik yerleri belirtmek için kullan, bariz olanı açıklama.
-5. Tek Odak: Aksi istenmedikçe uzun uzun alternatifler sunma; doğrudan endüstri standartlarına uygun en iyi tek çözümü göster.
-""".trimIndent()
-
-enum class ChatMode {
-    NORMAL, CODING, CHAT
-}
+private const val CUSTOM_SYSTEM_INSTRUCTION = "Sen yardımcı, doğru ve doğrudan cevaplar veren bir yapay zeka asistanısın. Kullanıcının isteğine uygun olarak gerektiğinde kod, açıklama, örnek ve çözüm üret. Gereksiz tekrar yapma."
+private const val DEFAULT_TEMPERATURE = 0.2f
+private const val DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 @OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
@@ -168,7 +152,9 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         private set
     var apiKey by mutableStateOf(prefs.getString(KEY_API, "") ?: "")
         private set
-    var mode by mutableStateOf(loadMode())
+    var temperature by mutableStateOf(prefs.getFloat(KEY_TEMPERATURE, DEFAULT_TEMPERATURE))
+        private set
+    var maxOutputTokens by mutableStateOf(prefs.getInt(KEY_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS))
         private set
     var availableModels by mutableStateOf(emptyList<String>())
         private set
@@ -210,6 +196,23 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    fun exportCurrentConversation(): String {
+        val id = activeId.value ?: return ""
+        val title = conversations.value.firstOrNull { it.id == id }?.title ?: "Sohbet"
+        val currentMessages = messages.value
+        return buildString {
+            appendLine(title)
+            appendLine("=".repeat(title.length.coerceAtLeast(6)))
+            appendLine()
+            currentMessages.forEach { message ->
+                appendLine(if (message.role == "user") "Kullanıcı:" else "Yapay Zeka:")
+                if (message.attachmentsJson != "[]") appendLine("[Ekli dosya]")
+                appendLine(message.text)
+                appendLine()
+            }
+        }.trimEnd()
+    }
+
     fun deleteConversation(id: String) {
         viewModelScope.launch {
             val replacement = conversations.value.firstOrNull { it.id != id }?.id
@@ -224,28 +227,19 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    fun saveSettings(key: String, model: String, selectedMode: ChatMode = mode) {
+    fun saveSettings(key: String, model: String, newTemperature: Float, newMaxOutputTokens: Int) {
         apiKey = key.trim()
         selectedModel = model.trim()
-        mode = selectedMode
+        temperature = newTemperature.coerceIn(0f, 2f)
+        maxOutputTokens = newMaxOutputTokens.coerceIn(256, 16384)
         prefs.edit()
             .putString(KEY_API, apiKey)
             .putString(KEY_MODEL, selectedModel)
-            .putString(KEY_MODE, selectedMode.name)
+            .putFloat(KEY_TEMPERATURE, temperature)
+            .putInt(KEY_MAX_OUTPUT_TOKENS, maxOutputTokens)
             .apply()
         settingsOpen = false
         loadModels()
-    }
-
-    fun changeMode(newMode: ChatMode) {
-        mode = newMode
-        prefs.edit().putString(KEY_MODE, newMode.name).apply()
-    }
-
-    private fun loadMode(): ChatMode {
-        val saved = prefs.getString(KEY_MODE, null)
-        if (!saved.isNullOrBlank()) return runCatching { ChatMode.valueOf(saved) }.getOrDefault(ChatMode.NORMAL)
-        return if (prefs.getBoolean(KEY_CODING_MODE_LEGACY, false)) ChatMode.CODING else ChatMode.NORMAL
     }
 
     fun loadModels() {
@@ -261,15 +255,38 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 modelsLoading = false
                 if (result.models.isNotEmpty()) {
                     availableModels = result.models
-                    if (selectedModel !in result.models) {
-                        selectedModel = result.models.first()
-                        prefs.edit().putString(KEY_MODEL, selectedModel).apply()
+                    val savedModel = selectedModel
+                    val shouldReplaceDeprecated = savedModel.equals("gemini-2.5-flash", ignoreCase = true)
+                    if (savedModel !in result.models || shouldReplaceDeprecated) {
+                        val fallback = choosePreferredModel(result.models, savedModel)
+                        if (!fallback.isNullOrBlank()) {
+                            selectedModel = fallback
+                            prefs.edit().putString(KEY_MODEL, selectedModel).apply()
+                        }
                     }
                 } else {
                     modelsError = result.error ?: "Model listesi alınamadı."
                 }
             }
         }
+    }
+
+    private fun choosePreferredModel(models: List<String>, exclude: String? = null): String? {
+        return models.asSequence()
+            .filter { !it.equals(exclude, ignoreCase = true) }
+            .maxByOrNull { model ->
+                val lower = model.lowercase()
+                val version = Regex("""gemini-(\d+)(?:\.(\d+))?""")
+                    .find(lower)
+                    ?.let { (it.groupValues[1].toIntOrNull() ?: 0) * 100 + (it.groupValues.getOrNull(2)?.toIntOrNull() ?: 0) }
+                    ?: 0
+                val familyScore = when {
+                    "flash" in lower -> 10000
+                    "pro" in lower -> 9000
+                    else -> 1000
+                }
+                familyScore + version
+            }
     }
 
     fun setModel(model: String) {
@@ -286,7 +303,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
             return
         }
         val conversationId = activeId.value ?: return
-        val requestModel = selectedModel.ifBlank { availableModels.firstOrNull().orEmpty() }
+        var requestModel = selectedModel.ifBlank { availableModels.firstOrNull().orEmpty() }
         if (requestModel.isBlank()) {
             error = "Kullanılabilir model bulunamadı. API anahtarını kaydet ve model listesinin yüklenmesini bekle."
             loadModels()
@@ -306,7 +323,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 }
                 val requestMessages = repo.getRequestMessages(conversationId)
                 val result = withContext(Dispatchers.IO) {
-                    api.generate(
+                    api.generateComplete(
                         apiKey = apiKey,
                         model = requestModel,
                         messages = requestMessages,
@@ -317,6 +334,20 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 }
                 finalResult = result
                 if (result.isSuccess) break
+                if (result.statusCode == 404 && result.rawError.orEmpty().contains("no longer available", ignoreCase = true)) {
+                    val refreshed = withContext(Dispatchers.IO) { api.listModels(apiKey) }
+                    if (refreshed.models.isNotEmpty()) {
+                        availableModels = refreshed.models
+                        val fallback = choosePreferredModel(refreshed.models, requestModel)
+                        if (!fallback.isNullOrBlank()) {
+                            selectedModel = fallback
+                            requestModel = fallback
+                            prefs.edit().putString(KEY_MODEL, selectedModel).apply()
+                            continue
+                        }
+                    }
+                    break
+                }
             }
             retrying = false
             loading = false
@@ -332,7 +363,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     fun retryLast() {
         val id = activeId.value ?: return
         if (loading || apiKey.isBlank()) return
-        val requestModel = selectedModel.ifBlank { availableModels.firstOrNull().orEmpty() }
+        var requestModel = selectedModel.ifBlank { availableModels.firstOrNull().orEmpty() }
         if (requestModel.isBlank()) {
             error = "Kullanılabilir model bulunamadı. API anahtarını kaydet ve model listesinin yüklenmesini bekle."
             loadModels()
@@ -347,7 +378,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 if (attempt > 1) delay((attempt - 1) * 1_500L)
                 val requestMessages = repo.getRequestMessages(id)
                 val result = withContext(Dispatchers.IO) {
-                    api.generate(
+                    api.generateComplete(
                         apiKey = apiKey,
                         model = requestModel,
                         messages = requestMessages,
@@ -358,6 +389,20 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 }
                 finalResult = result
                 if (result.isSuccess) break
+                if (result.statusCode == 404 && result.rawError.orEmpty().contains("no longer available", ignoreCase = true)) {
+                    val refreshed = withContext(Dispatchers.IO) { api.listModels(apiKey) }
+                    if (refreshed.models.isNotEmpty()) {
+                        availableModels = refreshed.models
+                        val fallback = choosePreferredModel(refreshed.models, requestModel)
+                        if (!fallback.isNullOrBlank()) {
+                            selectedModel = fallback
+                            requestModel = fallback
+                            prefs.edit().putString(KEY_MODEL, selectedModel).apply()
+                            continue
+                        }
+                    }
+                    break
+                }
             }
             retrying = false
             loading = false
@@ -366,23 +411,11 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    private fun modeSystemInstruction(): String = when (mode) {
-        ChatMode.CODING -> CODING_SYSTEM_INSTRUCTION
-        ChatMode.CHAT -> CHAT_SYSTEM_INSTRUCTION
-        ChatMode.NORMAL -> NORMAL_SYSTEM_INSTRUCTION
-    }
+    private fun modeSystemInstruction(): String = CUSTOM_SYSTEM_INSTRUCTION
 
-    private fun modeTemperature(): Double = when (mode) {
-        ChatMode.CODING -> 0.7
-        ChatMode.CHAT -> 0.9
-        ChatMode.NORMAL -> 0.7
-    }
+    private fun modeTemperature(): Double = temperature.toDouble()
 
-    private fun modeMaxOutputTokens(): Int = when (mode) {
-        ChatMode.CODING -> 16384
-        ChatMode.CHAT -> 1024
-        ChatMode.NORMAL -> 1024
-    }
+    private fun modeMaxOutputTokens(): Int = maxOutputTokens
 
     private fun buildError(result: GeminiApi.Result): String {
         val detail = result.rawError ?: "İstek başarısız."
@@ -414,6 +447,15 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
     var pendingUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(vm.exportCurrentConversation().toByteArray(Charsets.UTF_8))
+                }
+            }
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         pendingUris = (pendingUris + uris).distinct()
@@ -474,6 +516,17 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                         }
                     }
                     Divider()
+                    TextButton(
+                        onClick = {
+                            val safeTitle = conversations.firstOrNull { it.id == activeId }?.title?.ifBlank { "sohbet" } ?: "sohbet"
+                            exportLauncher.launch("${safeTitle.replace(Regex("[^A-Za-z0-9ğüşöçıİĞÜŞÖÇ _-]"), "_")}.txt")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Sohbeti dışa aktar")
+                    }
                     TextButton(onClick = { vm.settingsOpen = true }, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Settings, null); Spacer(Modifier.width(8.dp)); Text("Ayarlar")
                     }
@@ -488,25 +541,14 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                         val title = conversations.firstOrNull { it.id == activeId }?.title ?: "Yeni sohbet"
                         Column {
                             Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(vm.selectedModel, style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                "${vm.selectedModel} • Custom • T=${"%.2f".format(java.util.Locale.US, vm.temperature)} • ${vm.maxOutputTokens} token",
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         }
                     },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "Menü") } },
                     actions = {
-                        IconButton(onClick = { vm.changeMode(ChatMode.CODING) }) {
-                            Icon(
-                                Icons.Default.Code,
-                                contentDescription = "Kodlama Modu",
-                                tint = if (vm.mode == ChatMode.CODING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        IconButton(onClick = { vm.changeMode(ChatMode.CHAT) }) {
-                            Icon(
-                                Icons.Default.Chat,
-                                contentDescription = "Sohbet Modu",
-                                tint = if (vm.mode == ChatMode.CHAT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
                         IconButton(onClick = vm::newConversation) { Icon(Icons.Default.Add, "Yeni sohbet") }
                         IconButton(onClick = { vm.settingsOpen = true }) { Icon(Icons.Default.Settings, "Ayarlar") }
                     }
@@ -762,7 +804,7 @@ private fun MarkdownText(text: String) {
 }
 
 private fun markdownAnnotatedString(text: String, boldEverything: Boolean = false): AnnotatedString {
-    val tokenRegex = Regex("(\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|(?<!\\*)\\*[^*\\n]+\\*(?!\\*)|(?<!_)_[^_\\n]+_(?!_))")
+    val tokenRegex = Regex("(\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|(?<!\\*)\\*[^*\\n]+\\*(?!\\*)|(?<!_)_[^_\\n]+_(?!_)|(?<!\\*)\\*\\*[^*\\n]+)")
     return buildAnnotatedString {
         if (boldEverything) {
             withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(text) }
@@ -781,7 +823,9 @@ private fun markdownAnnotatedString(text: String, boldEverything: Boolean = fals
                     withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.drop(1).dropLast(1)) }
                 token.startsWith("_") && token.endsWith("_") ->
                     withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.drop(1).dropLast(1)) }
-                else -> append(token)
+                token.startsWith("**") ->
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.drop(2).trimEnd('*')) }
+                else -> append(token.trimEnd('*'))
             }
             cursor = match.range.last + 1
         }
@@ -845,7 +889,8 @@ private fun CodeBlock(
 private fun SettingsDialog(vm: ChatViewModel) {
     var key by remember(vm.apiKey) { mutableStateOf(vm.apiKey) }
     var model by remember(vm.selectedModel) { mutableStateOf(vm.selectedModel) }
-    var selectedMode by remember(vm.mode) { mutableStateOf(vm.mode) }
+    var tempText by remember(vm.temperature) { mutableStateOf("%.2f".format(java.util.Locale.US, vm.temperature)) }
+    var tokenText by remember(vm.maxOutputTokens) { mutableStateOf(vm.maxOutputTokens.toString()) }
     var expanded by remember { mutableStateOf(false) }
     val models = vm.availableModels.distinct()
 
@@ -865,34 +910,37 @@ private fun SettingsDialog(vm: ChatViewModel) {
                         inner()
                     }
                 )
-                Text("Mod", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    FilterChip(
-                        selected = selectedMode == ChatMode.NORMAL,
-                        onClick = { selectedMode = ChatMode.NORMAL },
-                        label = { Text("Normal") }
+                Text("Custom Modu", style = MaterialTheme.typography.labelLarge)
+                Text("Sıcaklık ve maksimum çıktı token sayısını kendin belirle.", style = MaterialTheme.typography.bodySmall)
+
+                Text("Sıcaklık (0.0 - 2.0)", style = MaterialTheme.typography.labelLarge)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BasicTextField(
+                        value = tempText,
+                        onValueChange = { value ->
+                            tempText = value.replace(',', '.')
+                        },
+                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                        singleLine = true
                     )
-                    FilterChip(
-                        selected = selectedMode == ChatMode.CODING,
-                        onClick = { selectedMode = ChatMode.CODING },
-                        label = { Text("Kodlama") },
-                        leadingIcon = { Icon(Icons.Default.Code, null, Modifier.size(16.dp)) }
-                    )
-                    FilterChip(
-                        selected = selectedMode == ChatMode.CHAT,
-                        onClick = { selectedMode = ChatMode.CHAT },
-                        label = { Text("Sohbet") },
-                        leadingIcon = { Icon(Icons.Default.Chat, null, Modifier.size(16.dp)) }
-                    )
+                    Text("${"%.2f".format(java.util.Locale.US, tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature)}")
                 }
-                Text(
-                    when (selectedMode) {
-                        ChatMode.CODING -> "Kodlama: temperature 0.7 • maksimum 16384 token • uzun ve doğrudan kod odaklı."
-                        ChatMode.CHAT -> "Sohbet: temperature 0.9 • maksimum 1024 token • daha doğal ve dengeli cevaplar."
-                        ChatMode.NORMAL -> "Normal: temperature 0.7 • maksimum 1024 token • dengeli cevaplar."
-                    },
-                    style = MaterialTheme.typography.bodySmall
+                androidx.compose.material3.Slider(
+                    value = tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature,
+                    onValueChange = { tempText = "%.2f".format(java.util.Locale.US, it) },
+                    valueRange = 0f..2f
                 )
+
+                Text("Maksimum çıktı tokeni", style = MaterialTheme.typography.labelLarge)
+                BasicTextField(
+                    value = tokenText,
+                    onValueChange = { tokenText = it.filter(Char::isDigit) },
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                    singleLine = true
+                )
+                Text("İzin verilen aralık: 256 - 16384", style = MaterialTheme.typography.bodySmall)
                 Text("Model", style = MaterialTheme.typography.labelLarge)
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                     BasicTextField(
@@ -927,7 +975,15 @@ private fun SettingsDialog(vm: ChatViewModel) {
                 Text("Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.", style = MaterialTheme.typography.bodySmall)
             }
         },
-        confirmButton = { Button(onClick = { vm.saveSettings(key, model, selectedMode) }) { Text("Kaydet") } },
+        confirmButton = {
+            Button(onClick = {
+                val parsedTemperature = tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature
+                val parsedTokens = tokenText.toIntOrNull()?.coerceIn(256, 16384) ?: vm.maxOutputTokens
+                vm.saveSettings(key, model, parsedTemperature, parsedTokens)
+            }) {
+                Text("Kaydet")
+            }
+        },
         dismissButton = { TextButton(onClick = { vm.settingsOpen = false }) { Text("İptal") } }
     )
 }
