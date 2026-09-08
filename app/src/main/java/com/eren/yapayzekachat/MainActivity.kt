@@ -2,11 +2,12 @@ package com.eren.yapayzekachat
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
+import androidx.core.content.FileProvider
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,6 +36,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -151,6 +154,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         private set
     var modelsError by mutableStateOf<String?>(null)
         private set
+    var modelChecks by mutableStateOf<Map<String, GeminiApi.ModelCheck>>(emptyMap())
+        private set
+    var checkingModels by mutableStateOf(false)
+        private set
 
     init {
         viewModelScope.launch {
@@ -219,6 +226,30 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     modelsError = result.error ?: "Model listesi alınamadı."
                 }
             }
+        }
+    }
+
+    fun checkModels() {
+        if (apiKey.isBlank()) {
+            modelsError = "Önce API anahtarını kaydetmelisin."
+            return
+        }
+        val candidates = availableModels
+        if (candidates.isEmpty()) {
+            modelsError = "Önce model listesini yenile."
+            return
+        }
+        checkingModels = true
+        modelChecks = emptyMap()
+        viewModelScope.launch(Dispatchers.IO) {
+            val results = linkedMapOf<String, GeminiApi.ModelCheck>()
+            // Sadece GET /models/{name}:generateContent yeteneği için metadata erişimini kontrol eder;
+            // her modelde generateContent çağrısı yapıp kota tüketmez.
+            candidates.forEach { model ->
+                results[model] = api.checkModel(apiKey, model)
+                withContext(Dispatchers.Main) { modelChecks = results.toMap() }
+            }
+            withContext(Dispatchers.Main) { checkingModels = false }
         }
     }
 
@@ -291,8 +322,16 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     private fun buildError(result: GeminiApi.Result): String {
-        val code = if (result.statusCode > 0) "HTTP ${result.statusCode}: " else ""
-        return "$code${result.rawError ?: "İstek başarısız."}"
+        val detail = result.rawError ?: "İstek başarısız."
+        return when (result.statusCode) {
+            401 -> "HTTP 401 — API anahtarı kabul edilmedi. Anahtarın Gemini API için geçerli olduğunu ve kopyalanırken boşluk/karakter hatası olmadığını kontrol et.\n\nDetay: $detail"
+            403 -> "HTTP 403 — API anahtarının bu isteğe veya seçili modele erişim izni yok. Cloud Console kısıtlamalarını kontrol et.\n\nDetay: $detail"
+            429 -> "HTTP 429 — Kota veya hız limiti aşıldı. Biraz bekleyip tekrar dene ya da başka bir model kullan.\n\nDetay: $detail"
+            else -> {
+                val code = if (result.statusCode > 0) "HTTP ${result.statusCode}: " else ""
+                "${code}$detail"
+            }
+        }
     }
 
     class Factory(private val context: Context) : ViewModelProvider.Factory {
@@ -310,9 +349,28 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
     val drawerState = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
     var draft by remember { mutableStateOf("") }
     var pendingUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        pendingUris = uris
+        pendingUris = (pendingUris + uris).distinct()
+    }
+    val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        pendingUris = (pendingUris + uris).distinct()
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val uri = cameraUri
+        if (success && uri != null) pendingUris = (pendingUris + uri).distinct()
+        else if (uri != null) runCatching { context.contentResolver.delete(uri, null, null) }
+        cameraUri = null
+    }
+
+    fun launchCamera() {
+        val dir = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
+        val file = java.io.File.createTempFile("camera_", ".jpg", dir)
+        val uri = FileProvider.getUriForFile(context, "${'$'}{BuildConfig.APPLICATION_ID}.fileprovider", file)
+        cameraUri = uri
+        cameraLauncher.launch(uri)
     }
 
     LaunchedEffect(messages.size) {
@@ -388,6 +446,8 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                 onDraftChange = { draft = it },
                 selectedUris = pendingUris,
                 onPickFiles = { picker.launch(arrayOf("*/*")) },
+                onPickGallery = { galleryPicker.launch("image/*") },
+                onTakePhoto = { runCatching { launchCamera() } },
                 onRemoveFile = { pendingUris = pendingUris.filterIndexed { index, _ -> index != it } },
                 onSend = {
                     vm.send(draft, pendingUris)
@@ -421,6 +481,8 @@ private fun ChatScreen(
     onDraftChange: (String) -> Unit,
     selectedUris: List<Uri>,
     onPickFiles: () -> Unit,
+    onPickGallery: () -> Unit,
+    onTakePhoto: () -> Unit,
     onRemoveFile: (Int) -> Unit,
     onSend: () -> Unit,
     loading: Boolean,
@@ -430,6 +492,7 @@ private fun ChatScreen(
     onModel: () -> Unit
 ) {
     val listState = rememberLazyListState()
+    var attachmentMenu by remember { mutableStateOf(false) }
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
@@ -489,7 +552,14 @@ private fun ChatScreen(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            IconButton(onClick = onPickFiles) { Icon(Icons.Default.AttachFile, "Dosya ekle") }
+            Box {
+                IconButton(onClick = { attachmentMenu = !attachmentMenu }) { Icon(Icons.Default.AttachFile, "Ek ekle") }
+                DropdownMenu(expanded = attachmentMenu, onDismissRequest = { attachmentMenu = false }) {
+                    DropdownMenuItem(text = { Text("Dosya seç") }, leadingIcon = { Icon(Icons.Default.AttachFile, null) }, onClick = { attachmentMenu = false; onPickFiles() })
+                    DropdownMenuItem(text = { Text("Galeriden seç") }, leadingIcon = { Icon(Icons.Default.Image, null) }, onClick = { attachmentMenu = false; onPickGallery() })
+                    DropdownMenuItem(text = { Text("Kamera") }, leadingIcon = { Icon(Icons.Default.CameraAlt, null) }, onClick = { attachmentMenu = false; onTakePhoto() })
+                }
+            }
             Box(
                 modifier = Modifier.weight(1f).clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
@@ -540,7 +610,6 @@ private fun MessageBubble(message: MessageEntity) {
 }
 
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsDialog(vm: ChatViewModel) {
     var key by remember(vm.apiKey) { mutableStateOf(vm.apiKey) }
@@ -594,6 +663,17 @@ private fun SettingsDialog(vm: ChatViewModel) {
                     if (vm.modelsLoading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     else Icon(Icons.Default.Refresh, null)
                     Spacer(Modifier.width(6.dp)); Text("Kaydet ve modelleri yenile")
+                }
+                if (vm.availableModels.isNotEmpty()) {
+                    TextButton(onClick = vm::checkModels, enabled = !vm.checkingModels) {
+                        if (vm.checkingModels) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Refresh, null)
+                        Spacer(Modifier.width(6.dp)); Text("Modelleri kontrol et (${vm.availableModels.size})")
+                    }
+                    vm.modelChecks.entries.take(50).forEach { (name, check) ->
+                        val marker = if (check.accessible) "✓" else "✕"
+                        Text("${'$'}marker ${'$'}name  HTTP ${'$'}{check.statusCode}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 vm.modelsError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Text("Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.", style = MaterialTheme.typography.bodySmall)

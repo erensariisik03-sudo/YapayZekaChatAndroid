@@ -38,8 +38,9 @@ class GeminiApi {
 
     fun listModels(apiKey: String): ResultModels {
         val request = Request.Builder()
-            .url("https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey")
+            .url("https://generativelanguage.googleapis.com/v1beta/models")
             .get()
+            .header("x-goog-api-key", apiKey.trim())
             .build()
 
         return try {
@@ -67,6 +68,19 @@ class GeminiApi {
             }
         } catch (e: Exception) {
             ResultModels(emptyList(), 0, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    fun checkModel(apiKey: String, model: String): ModelCheck {
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/${java.net.URLEncoder.encode(model, "UTF-8")}"
+        val request = Request.Builder().url(url).get().header("x-goog-api-key", apiKey.trim()).build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                ModelCheck(model, response.code, response.isSuccessful, extractError(body).ifBlank { response.message })
+            }
+        } catch (e: Exception) {
+            ModelCheck(model, 0, false, e.message ?: e.javaClass.simpleName)
         }
     }
 
@@ -110,11 +124,12 @@ class GeminiApi {
         )
         payload.put("generationConfig", JSONObject().put("temperature", 0.7))
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val request = Request.Builder()
             .url(url)
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", apiKey.trim())
             .build()
 
         return try {
@@ -160,6 +175,13 @@ class GeminiApi {
     data class ResultModels(
         val models: List<String>,
         val statusCode: Int,
+        val error: String? = null
+    )
+
+    data class ModelCheck(
+        val model: String,
+        val statusCode: Int,
+        val accessible: Boolean,
         val error: String? = null
     )
 }
