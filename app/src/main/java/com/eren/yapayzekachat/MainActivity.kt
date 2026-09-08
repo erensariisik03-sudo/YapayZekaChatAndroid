@@ -1,8 +1,9 @@
 package com.eren.yapayzekachat
 
+import android.content.ClipData
 import android.content.Context
+import android.content.ClipboardManager
 import android.net.Uri
-import android.os.Environment
 import androidx.core.content.FileProvider
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -32,12 +33,13 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Menu
@@ -76,19 +78,23 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -97,8 +103,6 @@ import com.eren.yapayzekachat.data.ChatRepository
 import com.eren.yapayzekachat.data.ConversationEntity
 import com.eren.yapayzekachat.data.MessageEntity
 import com.eren.yapayzekachat.network.GeminiApi
-import org.json.JSONArray
-import org.json.JSONObject
 
 private const val PREFS = "app_settings"
 private const val KEY_API = "api_key"
@@ -156,12 +160,9 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         private set
     var modelsError by mutableStateOf<String?>(null)
         private set
-    var modelChecks by mutableStateOf<Map<String, GeminiApi.ModelCheck>>(emptyMap())
-        private set
-    var checkingModels by mutableStateOf(false)
-        private set
 
     init {
+        if (apiKey.isNotBlank()) loadModels()
         viewModelScope.launch {
             conversations.collect { list ->
                 if (activeId.value == null && list.isNotEmpty()) activeId.value = list.first().id
@@ -205,6 +206,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         selectedModel = model.trim().ifBlank { DEFAULT_MODEL }
         prefs.edit().putString(KEY_API, apiKey).putString(KEY_MODEL, selectedModel).apply()
         settingsOpen = false
+        loadModels()
     }
 
     fun loadModels() {
@@ -228,30 +230,6 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                     modelsError = result.error ?: "Model listesi alınamadı."
                 }
             }
-        }
-    }
-
-    fun checkModels() {
-        if (apiKey.isBlank()) {
-            modelsError = "Önce API anahtarını kaydetmelisin."
-            return
-        }
-        val candidates = availableModels
-        if (candidates.isEmpty()) {
-            modelsError = "Önce model listesini yenile."
-            return
-        }
-        checkingModels = true
-        modelChecks = emptyMap()
-        viewModelScope.launch(Dispatchers.IO) {
-            val results = linkedMapOf<String, GeminiApi.ModelCheck>()
-            // Sadece GET /models/{name}:generateContent yeteneği için metadata erişimini kontrol eder;
-            // her modelde generateContent çağrısı yapıp kota tüketmez.
-            candidates.forEach { model ->
-                results[model] = api.checkModel(apiKey, model)
-                withContext(Dispatchers.Main) { modelChecks = results.toMap() }
-            }
-            withContext(Dispatchers.Main) { checkingModels = false }
         }
     }
 
@@ -595,22 +573,178 @@ private fun ChatScreen(
 @Composable
 private fun MessageBubble(message: MessageEntity) {
     val mine = message.role == "user"
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    fun copyToClipboard(text: String) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Yapay Zeka Chat", text))
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start
+    ) {
         Column(
-            modifier = Modifier.fillMaxWidth(.88f)
+            modifier = Modifier
+                .fillMaxWidth(.88f)
                 .clip(RoundedCornerShape(20.dp))
-                .background(if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                .background(
+                    if (mine) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant
+                )
                 .padding(14.dp)
         ) {
             if (message.attachmentsJson != "[]") {
                 Text("📎 Ekli dosya", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(5.dp))
             }
-            if (message.text.isNotBlank()) Text(message.text, style = MaterialTheme.typography.bodyLarge)
+            if (message.text.isNotBlank()) {
+                SelectionContainer {
+                    RenderMarkdownMessage(
+                        text = message.text,
+                        onCopyCode = ::copyToClipboard
+                    )
+                }
+            }
         }
     }
 }
 
+@Composable
+private fun RenderMarkdownMessage(
+    text: String,
+    onCopyCode: (String) -> Unit
+) {
+    val fenceRegex = Regex("(?s)```([^\\n]*)\\n(.*?)```")
+    var cursor = 0
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        fenceRegex.findAll(text).forEach { match ->
+            if (match.range.first > cursor) {
+                val before = text.substring(cursor, match.range.first)
+                if (before.isNotBlank()) MarkdownText(before)
+            }
+            val language = match.groupValues[1].trim()
+            val code = match.groupValues[2].trimEnd('\n')
+            CodeBlock(code = code, language = language, onCopy = onCopyCode)
+            cursor = match.range.last + 1
+        }
+        if (cursor < text.length) {
+            val tail = text.substring(cursor)
+            if (tail.isNotBlank()) MarkdownText(tail)
+        }
+    }
+}
+
+@Composable
+private fun MarkdownText(text: String) {
+    val normalized = text
+        // Bazı modeller yanlışlıkla *kelime** yazabiliyor; bunu kalın biçim olarak yorumla.
+        .replace(Regex("(?<!\\*)\\*([^*\\n]+)\\*\\*"), "**$1**")
+        .replace(Regex("(?m)^###\\s+"), "")
+
+    val lines = normalized.split('\n')
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        lines.forEach { line ->
+            val trimmed = line.trimStart()
+            val isH1 = trimmed.startsWith("# ")
+            val isH2 = trimmed.startsWith("## ")
+            val content = when {
+                isH1 || isH2 -> trimmed.dropWhile { it == '#' }.trimStart()
+                else -> line
+            }
+            Text(
+                text = markdownAnnotatedString(content, boldEverything = isH1 || isH2),
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = when {
+                        isH1 -> 22.sp
+                        isH2 -> 19.sp
+                        else -> MaterialTheme.typography.bodyLarge.fontSize
+                    },
+                    fontWeight = if (isH1 || isH2) FontWeight.Bold else FontWeight.Normal
+                )
+            )
+        }
+    }
+}
+
+private fun markdownAnnotatedString(text: String, boldEverything: Boolean = false): AnnotatedString {
+    val tokenRegex = Regex("(\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|(?<!\\*)\\*[^*\\n]+\\*(?!\\*)|(?<!_)_[^_\\n]+_(?!_))")
+    return buildAnnotatedString {
+        if (boldEverything) {
+            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(text) }
+            return@buildAnnotatedString
+        }
+        var cursor = 0
+        tokenRegex.findAll(text).forEach { match ->
+            if (match.range.first > cursor) append(text.substring(cursor, match.range.first))
+            val token = match.value
+            when {
+                token.startsWith("**") && token.endsWith("**") ->
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.drop(2).dropLast(2)) }
+                token.startsWith("__") && token.endsWith("__") ->
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.drop(2).dropLast(2)) }
+                token.startsWith("*") && token.endsWith("*") ->
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.drop(1).dropLast(1)) }
+                token.startsWith("_") && token.endsWith("_") ->
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.drop(1).dropLast(1)) }
+                else -> append(token)
+            }
+            cursor = match.range.last + 1
+        }
+        if (cursor < text.length) append(text.substring(cursor))
+    }
+}
+
+@Composable
+private fun CodeBlock(
+    code: String,
+    language: String,
+    onCopy: (String) -> Unit
+) {
+    var copied by remember(code) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_500L)
+            copied = false
+        }
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    language.ifBlank { "Kod" },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(onClick = {
+                    onCopy(code)
+                    copied = true
+                }) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (copied) "Kopyalandı" else "Kopyala")
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(14.dp)
+            ) {
+                Text(
+                    text = code,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -662,21 +796,14 @@ private fun SettingsDialog(vm: ChatViewModel) {
                         }
                     }
                 }
-                TextButton(onClick = { vm.saveSettings(key, model); vm.loadModels() }) {
-                    if (vm.modelsLoading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Refresh, null)
-                    Spacer(Modifier.width(6.dp)); Text("Kaydet ve modelleri yenile")
-                }
-                if (vm.availableModels.isNotEmpty()) {
-                    TextButton(onClick = vm::checkModels, enabled = !vm.checkingModels) {
-                        if (vm.checkingModels) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Default.Refresh, null)
-                        Spacer(Modifier.width(6.dp)); Text("Modelleri kontrol et (${vm.availableModels.size})")
+                if (vm.modelsLoading) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Modeller getiriliyor…", style = MaterialTheme.typography.bodySmall)
                     }
-                    vm.modelChecks.entries.take(50).forEach { (name, check) ->
-                        val marker = if (check.accessible) "✓" else "✕"
-                        Text("${'$'}marker ${'$'}name  HTTP ${'$'}{check.statusCode}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
+                } else if (vm.availableModels.isNotEmpty()) {
+                    Text("${vm.availableModels.size} model bulundu", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
                 }
                 vm.modelsError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Text("Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.", style = MaterialTheme.typography.bodySmall)
