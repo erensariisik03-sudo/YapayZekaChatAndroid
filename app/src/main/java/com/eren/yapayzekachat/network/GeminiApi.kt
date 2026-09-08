@@ -203,13 +203,15 @@ class GeminiApi {
                 return result.copy(text = combined.trim())
             }
 
-            requestMessages = (requestMessages + listOf(
-                RequestMessage(role = "assistant", text = result.text),
-                RequestMessage(
-                    role = "user",
-                    text = "Continue exactly from where you stopped. Do not repeat any previous text. Continue the answer/code directly and completely."
+            requestMessages.addAll(
+                listOf(
+                    RequestMessage(role = "assistant", text = result.text),
+                    RequestMessage(
+                        role = "user",
+                        text = "Continue exactly from where you stopped. Do not repeat any previous text. Continue the answer/code directly and completely."
+                    )
                 )
-            ).toMutableList()
+            )
         }
 
         return lastResult?.copy(text = combined.trim())
