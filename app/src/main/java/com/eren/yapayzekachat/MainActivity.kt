@@ -113,7 +113,7 @@ private const val KEY_CODING_MODE = "coding_mode"
 private const val DEFAULT_MODEL = "gemini-2.5-flash"
 private const val CODING_MODEL = "gemini-2.5-flash"
 private const val NORMAL_SYSTEM_INSTRUCTION = "Sen teknik konularda yardımcı olan, sohbet geçmişine sadık bir asistansın. Gereksiz tekrar yapma; kullanıcıya doğrudan, açık ve uygulanabilir cevaplar ver."
-private const val CODING_SYSTEM_INSTRUCTION = """
+private val CODING_SYSTEM_INSTRUCTION = """
 Sen uzman ve pragmatik bir yazılım geliştirme asistanısın. Amacın en az token harcayarak, en optimize ve doğrudan çalışan kodu üretmektir.
 
 KURALLAR:
