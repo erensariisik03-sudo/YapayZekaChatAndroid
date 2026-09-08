@@ -6,6 +6,7 @@ import android.os.Environment
 import androidx.core.content.FileProvider
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -105,6 +106,7 @@ private const val KEY_MODEL = "model"
 private const val DEFAULT_MODEL = "gemini-2.5-flash"
 private const val SYSTEM_INSTRUCTION = "Sen teknik konularda yardımcı olan, sohbet geçmişine sadık bir asistansın. Gereksiz tekrar yapma; kullanıcıya doğrudan, açık ve uygulanabilir cevaplar ver."
 
+@OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
     private val vm: ChatViewModel by viewModels {
         ChatViewModel.Factory(applicationContext)
@@ -610,6 +612,7 @@ private fun MessageBubble(message: MessageEntity) {
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsDialog(vm: ChatViewModel) {
     var key by remember(vm.apiKey) { mutableStateOf(vm.apiKey) }
