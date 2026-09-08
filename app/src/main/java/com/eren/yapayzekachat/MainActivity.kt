@@ -39,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -63,6 +64,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -107,8 +109,20 @@ import com.eren.yapayzekachat.network.GeminiApi
 private const val PREFS = "app_settings"
 private const val KEY_API = "api_key"
 private const val KEY_MODEL = "model"
+private const val KEY_CODING_MODE = "coding_mode"
 private const val DEFAULT_MODEL = "gemini-2.5-flash"
-private const val SYSTEM_INSTRUCTION = "Sen teknik konularda yardımcı olan, sohbet geçmişine sadık bir asistansın. Gereksiz tekrar yapma; kullanıcıya doğrudan, açık ve uygulanabilir cevaplar ver."
+private const val CODING_MODEL = "gemini-2.5-flash"
+private const val NORMAL_SYSTEM_INSTRUCTION = "Sen teknik konularda yardımcı olan, sohbet geçmişine sadık bir asistansın. Gereksiz tekrar yapma; kullanıcıya doğrudan, açık ve uygulanabilir cevaplar ver."
+private const val CODING_SYSTEM_INSTRUCTION = """
+Sen uzman ve pragmatik bir yazılım geliştirme asistanısın. Amacın en az token harcayarak, en optimize ve doğrudan çalışan kodu üretmektir.
+
+KURALLAR:
+1. Sıfır Sohbet: Selamlama, giriş veya kapanış cümleleri kullanma ("Merhaba", "İşte kodunuz", "Başka sorunuz var mı?" vb.).
+2. Doğrudan Çözüm: Sadece kodu ver. Sadece mantığın çok karmaşık olduğu durumlarda 1-2 cümlelik teknik açıklama yap.
+3. Format: Kod bloklarını her zaman ilgili dil etiketiyle (Markdown) sarmala.
+4. Yorum Satırları: Koddaki yorum satırlarını (comments) sadece kritik yerleri belirtmek için kullan, bariz olanı açıklama.
+5. Tek Odak: Aksi istenmedikçe uzun uzun alternatifler sunma; doğrudan endüstri standartlarına uygun en iyi tek çözümü göster.
+""".trimIndent()
 
 @OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
@@ -156,6 +170,8 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     var retrying by mutableStateOf(false)
         private set
     var settingsOpen by mutableStateOf(false)
+    var codingMode by mutableStateOf(prefs.getBoolean(KEY_CODING_MODE, false))
+        private set
     var modelsLoading by mutableStateOf(false)
         private set
     var modelsError by mutableStateOf<String?>(null)
@@ -201,12 +217,22 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    fun saveSettings(key: String, model: String) {
+    fun saveSettings(key: String, model: String, codingEnabled: Boolean = codingMode) {
         apiKey = key.trim()
         selectedModel = model.trim().ifBlank { DEFAULT_MODEL }
-        prefs.edit().putString(KEY_API, apiKey).putString(KEY_MODEL, selectedModel).apply()
+        codingMode = codingEnabled
+        prefs.edit()
+            .putString(KEY_API, apiKey)
+            .putString(KEY_MODEL, selectedModel)
+            .putBoolean(KEY_CODING_MODE, codingMode)
+            .apply()
         settingsOpen = false
         loadModels()
+    }
+
+    fun setCodingMode(enabled: Boolean) {
+        codingMode = enabled
+        prefs.edit().putBoolean(KEY_CODING_MODE, enabled).apply()
     }
 
     fun loadModels() {
@@ -261,7 +287,14 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 }
                 val requestMessages = repo.getRequestMessages(conversationId)
                 val result = withContext(Dispatchers.IO) {
-                    api.generate(apiKey, selectedModel, requestMessages, SYSTEM_INSTRUCTION)
+                    api.generate(
+                        apiKey = apiKey,
+                        model = if (codingMode) CODING_MODEL else selectedModel,
+                        messages = requestMessages,
+                        systemInstruction = if (codingMode) CODING_SYSTEM_INSTRUCTION else NORMAL_SYSTEM_INSTRUCTION,
+                        temperature = if (codingMode) 0.2 else 0.7,
+                        maxOutputTokens = if (codingMode) 500 else null
+                    )
                 }
                 finalResult = result
                 if (result.isSuccess) break
@@ -289,7 +322,14 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 if (attempt > 1) delay((attempt - 1) * 1_500L)
                 val requestMessages = repo.getRequestMessages(id)
                 val result = withContext(Dispatchers.IO) {
-                    api.generate(apiKey, selectedModel, requestMessages, SYSTEM_INSTRUCTION)
+                    api.generate(
+                        apiKey = apiKey,
+                        model = if (codingMode) CODING_MODEL else selectedModel,
+                        messages = requestMessages,
+                        systemInstruction = if (codingMode) CODING_SYSTEM_INSTRUCTION else NORMAL_SYSTEM_INSTRUCTION,
+                        temperature = if (codingMode) 0.2 else 0.7,
+                        maxOutputTokens = if (codingMode) 500 else null
+                    )
                 }
                 finalResult = result
                 if (result.isSuccess) break
@@ -367,7 +407,6 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 12.dp)) {
                         Text("Yapay Zeka Chat", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.weight(1f))
-                        IconButton(onClick = vm::newConversation) { Icon(Icons.Default.Add, "Yeni sohbet") }
                     }
                     Button(onClick = vm::newConversation, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Yeni sohbet")
@@ -414,6 +453,13 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                     },
                     navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "Menü") } },
                     actions = {
+                        IconButton(onClick = { vm.setCodingMode(!vm.codingMode) }) {
+                            Icon(
+                                Icons.Default.Code,
+                                contentDescription = if (vm.codingMode) "Kodlama Modu açık" else "Kodlama Modu kapalı",
+                                tint = if (vm.codingMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                         IconButton(onClick = { vm.settingsOpen = true }) { Icon(Icons.Default.Settings, "Ayarlar") }
                     }
                 )
@@ -751,6 +797,7 @@ private fun CodeBlock(
 private fun SettingsDialog(vm: ChatViewModel) {
     var key by remember(vm.apiKey) { mutableStateOf(vm.apiKey) }
     var model by remember(vm.selectedModel) { mutableStateOf(vm.selectedModel) }
+    var codingEnabled by remember(vm.codingMode) { mutableStateOf(vm.codingMode) }
     var expanded by remember { mutableStateOf(false) }
     val fallback = listOf(
         DEFAULT_MODEL,
@@ -775,6 +822,23 @@ private fun SettingsDialog(vm: ChatViewModel) {
                         inner()
                     }
                 )
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Code, contentDescription = null, tint = if (codingEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Kodlama Modu", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Kısa ve doğrudan kod cevapları • gemini-2.5-flash • 0.2 • 500 token",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(checked = codingEnabled, onCheckedChange = { codingEnabled = it })
+                    }
+                }
                 Text("Model", style = MaterialTheme.typography.labelLarge)
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                     BasicTextField(
@@ -809,7 +873,7 @@ private fun SettingsDialog(vm: ChatViewModel) {
                 Text("Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.", style = MaterialTheme.typography.bodySmall)
             }
         },
-        confirmButton = { Button(onClick = { vm.saveSettings(key, model) }) { Text("Kaydet") } },
+        confirmButton = { Button(onClick = { vm.saveSettings(key, model, codingEnabled) }) { Text("Kaydet") } },
         dismissButton = { TextButton(onClick = { vm.settingsOpen = false }) { Text("İptal") } }
     )
 }

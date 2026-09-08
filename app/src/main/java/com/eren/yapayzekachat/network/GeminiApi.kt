@@ -75,7 +75,9 @@ class GeminiApi {
         apiKey: String,
         model: String,
         messages: List<RequestMessage>,
-        systemInstruction: String
+        systemInstruction: String,
+        temperature: Double = 0.7,
+        maxOutputTokens: Int? = null
     ): Result {
         val payload = JSONObject()
         val contents = JSONArray()
@@ -109,7 +111,9 @@ class GeminiApi {
                 JSONArray().put(JSONObject().put("text", systemInstruction))
             )
         )
-        payload.put("generationConfig", JSONObject().put("temperature", 0.7))
+        val generationConfig = JSONObject().put("temperature", temperature)
+        if (maxOutputTokens != null) generationConfig.put("maxOutputTokens", maxOutputTokens)
+        payload.put("generationConfig", generationConfig)
 
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val request = Request.Builder()

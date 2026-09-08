@@ -25,3 +25,7 @@ Android Studio'da projeyi açıp `app` modülünü çalıştır.
 `.github/workflows/build.yml` her `push` ve `pull_request` sonrasında debug APK derler ve artifact olarak yükler.
 
 > Not: Debug APK build için API anahtarına gerek yoktur. API anahtarı uygulamanın Ayarlar ekranından girilir.
+## Kodlama Modu
+
+Ayarlar bölümünden veya üst bardaki `</>` simgesinden Kodlama Modu açılabilir. Bu modda istekler `gemini-2.5-flash` modeline, düşük `temperature` (`0.2`) ve `maxOutputTokens` (`500`) ile gönderilir; doğrudan kod üretmeye odaklanan sistem talimatı kullanılır.
+
