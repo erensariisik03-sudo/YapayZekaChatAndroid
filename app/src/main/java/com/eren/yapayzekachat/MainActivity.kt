@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -84,7 +85,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -129,7 +129,6 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     val activeConversationId: StateFlow<String?> = activeId
 
     val messages: StateFlow<List<MessageEntity>> = activeId
-        .distinctUntilChanged()
         .flatMapLatest { id ->
             if (id == null) kotlinx.coroutines.flow.flowOf(emptyList()) else repo.observeMessages(id)
         }
@@ -541,6 +540,7 @@ private fun MessageBubble(message: MessageEntity) {
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsDialog(vm: ChatViewModel) {
     var key by remember(vm.apiKey) { mutableStateOf(vm.apiKey) }
