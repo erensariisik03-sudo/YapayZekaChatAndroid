@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -76,6 +77,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
@@ -991,61 +993,46 @@ private fun SettingsDialog(vm: ChatViewModel) {
     var tokenText by remember(vm.maxOutputTokens) { mutableStateOf(vm.maxOutputTokens.toString()) }
     var expanded by remember { mutableStateOf(false) }
     val models = vm.availableModels.distinct()
+    val scrollState = rememberScrollState()
 
     AlertDialog(
         onDismissRequest = { vm.settingsOpen = false },
         title = { Text("Ayarlar") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Text("Gemini API anahtarı", style = MaterialTheme.typography.labelLarge)
                 BasicTextField(
                     value = key,
                     onValueChange = { key = it },
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(12.dp),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
                     decorationBox = { inner ->
                         if (key.isBlank()) Text("Gemini API anahtarı", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .6f))
                         inner()
                     }
                 )
-                Text("Custom Modu", style = MaterialTheme.typography.labelLarge)
-                Text("Sıcaklık ve maksimum çıktı token sayısını kendin belirle.", style = MaterialTheme.typography.bodySmall)
 
-                Text("Sıcaklık (0.0 - 2.0)", style = MaterialTheme.typography.labelLarge)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BasicTextField(
-                        value = tempText,
-                        onValueChange = { value ->
-                            tempText = value.replace(',', '.')
-                        },
-                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
-                        singleLine = true
-                    )
-                    Text("${"%.2f".format(java.util.Locale.US, tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature)}")
-                }
-                androidx.compose.material3.Slider(
-                    value = tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature,
-                    onValueChange = { tempText = "%.2f".format(java.util.Locale.US, it) },
-                    valueRange = 0f..2f
-                )
-
-                Text("Maksimum çıktı tokeni", style = MaterialTheme.typography.labelLarge)
-                BasicTextField(
-                    value = tokenText,
-                    onValueChange = { tokenText = it.filter(Char::isDigit) },
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
-                    singleLine = true
-                )
-                Text("İzin verilen aralık: 256 - 16384", style = MaterialTheme.typography.bodySmall)
                 Text("Model", style = MaterialTheme.typography.labelLarge)
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                     BasicTextField(
-                        value = model,
+                        value = model.ifBlank { "Model seç" },
                         onValueChange = {},
                         readOnly = true,
-                        modifier = Modifier.menuAnchor().fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(12.dp),
                         decorationBox = { inner ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.weight(1f)) { inner() }
@@ -1054,9 +1041,26 @@ private fun SettingsDialog(vm: ChatViewModel) {
                         },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                     )
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                        models.forEach { item ->
-                            DropdownMenuItem(text = { Text(item) }, onClick = { model = item; expanded = false })
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        if (models.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Önce API key kaydedip modelleri getir.") },
+                                onClick = { expanded = false },
+                                enabled = false
+                            )
+                        } else {
+                            models.forEach { item ->
+                                DropdownMenuItem(
+                                    text = { Text(item, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    onClick = {
+                                        model = item
+                                        expanded = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -1070,7 +1074,59 @@ private fun SettingsDialog(vm: ChatViewModel) {
                     Text("${vm.availableModels.size} model bulundu", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
                 }
                 vm.modelsError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                Text("Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.", style = MaterialTheme.typography.bodySmall)
+
+                Text("Custom Modu", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "Sıcaklık ve maksimum çıktı token sayısını kendin belirle.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Text("Sıcaklık (0.0 - 2.0)", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    BasicTextField(
+                        value = tempText,
+                        onValueChange = { value -> tempText = value.replace(',', '.') },
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(12.dp),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                        singleLine = true
+                    )
+                    Text(
+                        "%.2f".format(
+                            java.util.Locale.US,
+                            tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature
+                        )
+                    )
+                }
+                androidx.compose.material3.Slider(
+                    value = tempText.toFloatOrNull()?.coerceIn(0f, 2f) ?: vm.temperature,
+                    onValueChange = { tempText = "%.2f".format(java.util.Locale.US, it) },
+                    valueRange = 0f..2f
+                )
+
+                Text("Maksimum çıktı tokeni", style = MaterialTheme.typography.labelLarge)
+                BasicTextField(
+                    value = tokenText,
+                    onValueChange = { tokenText = it.filter(Char::isDigit) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(12.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                    singleLine = true
+                )
+                Text("İzin verilen aralık: 256 - 16384", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Anahtar bu cihazdaki uygulama ayarlarında tutulur; kaynak koduna eklenmez.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         },
         confirmButton = {
@@ -1082,6 +1138,8 @@ private fun SettingsDialog(vm: ChatViewModel) {
                 Text("Kaydet")
             }
         },
-        dismissButton = { TextButton(onClick = { vm.settingsOpen = false }) { Text("İptal") } }
+        dismissButton = {
+            TextButton(onClick = { vm.settingsOpen = false }) { Text("İptal") }
+        }
     )
 }
