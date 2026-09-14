@@ -299,6 +299,12 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         prefs.edit().putString(KEY_MODEL, model).apply()
     }
 
+    fun setModelAndRetry(model: String) {
+        setModel(model)
+        error = null
+        retryLast()
+    }
+
     fun send(text: String, uris: List<Uri>) {
         val clean = text.trim()
         if (clean.isBlank() && uris.isEmpty()) return
@@ -625,7 +631,10 @@ fun YapayZekaChatApp(vm: ChatViewModel) {
                 retrying = vm.retrying,
                 error = vm.error,
                 onRetry = vm::retryLast,
-                onModel = { vm.settingsOpen = true }
+                onModel = { vm.settingsOpen = true },
+                vmModels = vm.availableModels,
+                selectedModel = vm.selectedModel,
+                onSelectModel = vm::setModelAndRetry
             )
         }
     }
@@ -656,7 +665,10 @@ private fun ChatScreen(
     retrying: Boolean,
     error: String?,
     onRetry: () -> Unit,
-    onModel: () -> Unit
+    onModel: () -> Unit,
+    vmModels: List<String>,
+    selectedModel: String,
+    onSelectModel: (String) -> Unit
 ) {
     val listState = rememberLazyListState()
     var attachmentMenu by remember { mutableStateOf(false) }
@@ -699,8 +711,40 @@ private fun ChatScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = onRetry) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("Tekrar gönder") }
-                        TextButton(onClick = onModel) { Icon(Icons.Default.SwapHoriz, null); Spacer(Modifier.width(4.dp)); Text("Model değiştir") }
+                        TextButton(onClick = onRetry) {
+                            Icon(Icons.Default.Refresh, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Tekrar gönder")
+                        }
+                        TextButton(onClick = onModel) {
+                            Icon(Icons.Default.Settings, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Model ayarları")
+                        }
+                    }
+                    if (error.contains("model", ignoreCase = true) || error.contains("404", ignoreCase = true) || error.contains("403", ignoreCase = true)) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("Modeli seç; seçtiğin modelle son soru otomatik yeniden gönderilecek.", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(6.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            vmModels.distinct().take(8).forEach { model ->
+                                OutlinedButton(
+                                    onClick = { onSelectModel(model) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        model,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (model == selectedModel) {
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("seçili")
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
